@@ -50,14 +50,10 @@ jobs:
         with:
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: packages/desktop/src-tauri
-
+      # No caches: a pull request from a fork can run a workflow of its own here and restore this branch's caches, and a build directory is a snapshot of the private source.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - run: npm ci --workspace @fusilli/desktop
       - run: npm run icon --workspace @fusilli/desktop
