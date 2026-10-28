@@ -1,0 +1,88 @@
+name: Desktop release
+
+# Builds the desktop app from a `desktop-v*` tag on the private source repository and publishes it here, where anybody can download it: a private repository's release assets cannot be. Run by hand, since the source's own Actions cannot reach this one:
+#
+#   gh workflow run desktop-release.yml -R evertdespiegeleer/fusilli-space-program-public -f tag=desktop-v0.2.0
+#
+# Installed apps update themselves from the `latest.json` tauri-action writes into the release, and the site links each OS to its installer in it (packages/game/src/desktop-update.ts in the source).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: A desktop-vX.Y.Z tag on evertdespiegeleer/browser-ksp
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One build for both Apple chips.
+          - os: macos-latest
+            args: --target universal-apple-darwin
+          - os: windows-latest
+            args: ''
+          # The oldest supported runner, so the AppImage runs on every glibc since.
+          - os: ubuntu-22.04
+            args: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: evertdespiegeleer/browser-ksp
+          ref: ${{ inputs.tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+
+      # The release is named for the version the app reports, so a tag that disagrees with it is a mistake.
+      - shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' packages/desktop/src-tauri/Cargo.toml | head -1)
+          [ "${{ inputs.tag }}" = "desktop-v$version" ] || { echo "Tag ${{ inputs.tag }} does not match Cargo.toml's $version"; exit 1; }
+
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/desktop/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --workspace @fusilli/desktop
+      - run: npm run icon --workspace @fusilli/desktop
+
+      # A draft until every OS is in it, so neither a download nor an installed app ever sees a release with half its files.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: packages/desktop
+          tauriScript: npx tauri
+          args: ${{ matrix.args }}
+          tagName: ${{ inputs.tag }}
+          releaseName: Fusilli Space Program ${{ inputs.tag }}
+          releaseBody: Download the installer for your computer below, or play in the browser at https://fusillispaceprogram.com. An installed app offers each new version on its main menu.
+          releaseCommitish: ${{ github.sha }}
+          releaseDraft: true
+          updaterJsonPreferNsis: true
+
+  publish:
+    needs: bundle
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ inputs.tag }}" -R "$GITHUB_REPOSITORY" --draft=false --latest
